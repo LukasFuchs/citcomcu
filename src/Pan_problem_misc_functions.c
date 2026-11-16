@@ -988,6 +988,14 @@ void get_3x3_from_9vec(double l[3][3], double *l9)
   l[1][0]=l9[3];  l[1][1]=l9[4];  l[1][2]=l9[5];
   l[2][0]=l9[6];  l[2][1]=l9[7];  l[2][2]=l9[8];
 }
+
+void get_3x3_from_9vec_fl(double l[3][3], CITCOM_XMC_PREC *l9)
+{
+  l[0][0]=l9[0];  l[0][1]=l9[1];  l[0][2]=l9[2];
+  l[1][0]=l9[3];  l[1][1]=l9[4];  l[1][2]=l9[5];
+  l[2][0]=l9[6];  l[2][1]=l9[7];  l[2][2]=l9[8];
+}
+
 /* symmetric */
 void get_3x3_from_6vec(double l[3][3], double *l6)
 {
@@ -1068,6 +1076,19 @@ void matmul_9_xmc(float *a,CITCOM_XMC_PREC *b,CITCOM_XMC_PREC *c)
       for(k=0;k < 3;k++)
 	tmp += (double)a[i*3+k] * (double)b[k*3+j];
       c[i*3+j] = (CITCOM_XMC_PREC)tmp;
+    }
+}
+/*  
+  Calculate F^2 = F * F^T
+*/
+void F_times_FT(double in[3][3],double out[3][3])
+{
+  int i,j,k; 
+  for(i=0;i<3;i++)
+    for(j=0;j<3;j++){
+      out[i][j] = 0.0; 
+      for(k=0;k<3;k++)
+        out[i][j] += in[i][k] * in[j][k];
     }
 }
 void assign_to_3x3(double a[3][3],double val)

@@ -73,6 +73,14 @@ void set_convection_defaults(struct All_variables *E)
   input_boolean("tracers_track_fse",&(E->tracers_track_fse), "0", E->parallel.me); /* keep track of full tensor */
   if(E->tracers_track_fse && (!E->tracers_track_strain)) /*  */
     myerror("need basic strain tracking for FSE tracking",E);
+  input_boolean("strain_healing",&(E->s_heal),"off",E->parallel.me);
+  input_boolean("strain_limit",&(E->s_limit),"off",E->parallel.me);
+  input_float("heal_fac",&(E->B_heal),"8.24e3",E->parallel.me);
+  input_float("critical_gam",&(E->gamma_cr),"10.0",E->parallel.me);
+  input_float("maximum_D",&(E->D_max),"0.9",E->parallel.me);
+  input_float("heal_T_act",&(E->B_Tactivation),"23.03",E->parallel.me);
+  if(E->s_heal && (!E->tracers_track_strain)) /*  */
+    myerror("need basic strain tracking for strain healing",E);
 
   input_float("tracers_assign_dense_fraction",&(E->tracers_assign_dense_fraction),"1.0",E->parallel.me);
 
@@ -247,9 +255,25 @@ void convection_initial_fields(struct All_variables *E)
 			         E->tracer_strain[j*need_space + 1] = E->tracer_strain[j*need_space + 5] = 
 				   E->tracer_strain[j*need_space + 9] =  1.0;
 			       }
+                               E->F11 = (float *)calloc((E->lmesh.nno + 1),sizeof(float));
+                               E->F12 = (float *)calloc((E->lmesh.nno + 1),sizeof(float));
+                               E->F13 = (float *)calloc((E->lmesh.nno + 1),sizeof(float));
+                               E->F21 = (float *)calloc((E->lmesh.nno + 1),sizeof(float));
+                               E->F22 = (float *)calloc((E->lmesh.nno + 1),sizeof(float)); 
+                               E->F23 = (float *)calloc((E->lmesh.nno + 1),sizeof(float)); 
+                               E->F31 = (float *)calloc((E->lmesh.nno + 1),sizeof(float)); 
+                               E->F32 = (float *)calloc((E->lmesh.nno + 1),sizeof(float)); 
+                               E->F33 = (float *)calloc((E->lmesh.nno + 1),sizeof(float));
+                               for(j=0;j<=E->lmesh.nno;j++){
+                                 E->F11[j] = 1.0; E->F22[j] = 1.0; E->F33[j] =1.0;
+                               } 
  			    }
 			    /* element strain (scalar) */
 			    E->strain = (float *)calloc((E->lmesh.nno + 1), sizeof(float));
+
+
+			    if(E->tracers_track_fse)
+			       E->strain2 = (float *)calloc((E->lmesh.nno + 1), sizeof(float));
 
 			  }
 			  if(E->tracers_add_flavors){
@@ -617,6 +641,7 @@ void convection_initial_markers1(struct All_variables *E)
 	//int *element, el, i, j, k, p, node, ii, jj;
   int *element, el, j, node,el_node,itracer;
   float *element_strain;
+  float *eF11,*eF12,*eF13,*eF21,*eF22,*eF23,*eF31,*eF32,*eF33;
   double x, y, z, r, t, f, dX[4];
   static int been_here = 0,tscol;
   const int dims = E->mesh.nsd;
@@ -627,8 +652,21 @@ void convection_initial_markers1(struct All_variables *E)
   }
 
   element = (int *)safe_malloc((E->lmesh.nel + 1) * sizeof(int));
-  if(E->tracers_track_strain)
+
+  if(E->tracers_track_strain){
     element_strain = (float *)calloc((E->lmesh.nel + 1), sizeof(float));
+    if(E->tracers_track_fse){ 
+       eF11 = (float *)calloc((E->lmesh.nel+1), sizeof(float));
+       eF12 = (float *)calloc((E->lmesh.nel+1), sizeof(float));
+       eF13 = (float *)calloc((E->lmesh.nel+1), sizeof(float));
+       eF21 = (float *)calloc((E->lmesh.nel+1), sizeof(float));
+       eF22 = (float *)calloc((E->lmesh.nel+1), sizeof(float));
+       eF23 = (float *)calloc((E->lmesh.nel+1), sizeof(float));
+       eF31 = (float *)calloc((E->lmesh.nel+1), sizeof(float));
+       eF32 = (float *)calloc((E->lmesh.nel+1), sizeof(float));
+       eF33 = (float *)calloc((E->lmesh.nel+1), sizeof(float));
+    }
+  }
   
   for(el = 1; el <= E->lmesh.nel; el++){
     /* assign composition and strain based on average over nodes
@@ -637,12 +675,36 @@ void convection_initial_markers1(struct All_variables *E)
     for(j = 1; j <= ends; j++){
       el_node = E->ien[el].node[j];
       t += E->C[el_node];
-      if(E->tracers_track_strain)
+      if(E->tracers_track_strain){
 	element_strain[el] += E->strain[el_node];
+	if(E->tracers_track_fse){
+	   eF11[el] += E->F11[el_node];
+	   eF12[el] += E->F12[el_node];
+	   eF13[el] += E->F13[el_node];
+	   eF21[el] += E->F21[el_node];
+	   eF22[el] += E->F22[el_node];
+	   eF23[el] += E->F23[el_node];
+	   eF31[el] += E->F31[el_node];
+	   eF32[el] += E->F32[el_node];
+	   eF33[el] += E->F33[el_node];
+	}
+      }
     }
     t = t / ends;
-    if(E->tracers_track_strain)
+    if(E->tracers_track_strain){
       element_strain[el] /= ends;
+      if(E->tracers_track_fse){
+	eF11[el] /= ends;
+	eF12[el] /= ends;
+	eF13[el] /= ends;
+	eF21[el] /= ends;
+	eF22[el] /= ends;
+	eF23[el] /= ends;
+	eF31[el] /= ends;
+	eF32[el] /= ends;
+	eF33[el] /= ends;
+      }
+    }
     
     E->CE[el] = t;
     element[el] = 0;
@@ -713,8 +775,20 @@ void convection_initial_markers1(struct All_variables *E)
 		  E->C12[itracer] = 1;
 		  }
       */
-      if(E->tracers_track_strain) /* this will smooth quite a bit */
+      if(E->tracers_track_strain){ /* this will smooth quite a bit */
 	E->tracer_strain[itracer*tscol] = element_strain[el];
+	if(E->tracers_track_fse){
+ 	   E->tracer_strain[itracer*tscol+1] = eF11[el];
+	   E->tracer_strain[itracer*tscol+1+1] = eF12[el];
+	   E->tracer_strain[itracer*tscol+1+2] = eF13[el];
+	   E->tracer_strain[itracer*tscol+1+3] = eF21[el];
+	   E->tracer_strain[itracer*tscol+1+4] = eF22[el];
+	   E->tracer_strain[itracer*tscol+1+5] = eF23[el];
+	   E->tracer_strain[itracer*tscol+1+6] = eF31[el];
+	   E->tracer_strain[itracer*tscol+1+7] = eF32[el];
+	   E->tracer_strain[itracer*tscol+1+8] = eF33[el];
+	}
+      }
   }
   /* reassign to nodal values */
   get_C_from_markers(E, E->C);
@@ -724,8 +798,17 @@ void convection_initial_markers1(struct All_variables *E)
 
   if(E->tracers_track_strain){
     /* reassign (?) */
-    get_strain_from_markers(E,E->strain);
+    if(E->tracers_track_fse){
+      get_strain_from_markers_fse(E,E->strain,E->strain2,E->F11,E->F12,E->F13,E->F21,E->F22,E->F23,E->F31,E->F32,E->F33);
+    }else{
+      get_strain_from_markers(E,E->strain);
+    }
     free(element_strain);
+    if(E->tracers_track_fse){
+       free(eF11),free(eF12),free(eF13);
+       free(eF21),free(eF22),free(eF23);
+       free(eF31),free(eF32),free(eF33);
+    }
   }
 
   return;

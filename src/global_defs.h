@@ -673,7 +673,7 @@ struct MONITOR
 	int sobs_output_cols;
 
   int solution_cycles,solution_cycles_out;
-  int visc_iter_count;
+  int visc_iter_count,strain_count;
   int max_sdep_visc_iter;
 	float time_scale,time_scale_ma;
 	float length_scale;
@@ -862,7 +862,7 @@ struct CONTROL
 	int total_v_solver_calls;
 
   int gzdir,vtk_pressure_out,vtk_vgm_out,vtk_viscosity_out,vtk_e2_out,vtk_stress2_out,vtk_stress_3D,
-    vtk_ddpart_out,ele_pressure_out;
+    vtk_ddpart_out,ele_pressure_out,vtk_strain_out,vtk_yield_out;
   
 	int record_every;
 	int record_all_until;
@@ -908,6 +908,8 @@ struct DATA
 	float T_sol0;
 	float T_adi0;
 	float T_adi1;
+	float T_mwea;
+	float z_mwea;
 	float buoy_flux;
 	float delta_S;
 	float dTsol_dz;
@@ -994,6 +996,12 @@ struct All_variables
   int tracers_track_strain;	/* track scalar strain */
   int tracers_track_fse;	/* track full FSE */
   CITCOM_XMC_PREC *tracer_strain;
+  int s_heal;
+  int s_limit;
+  float B_heal;
+  float gamma_cr;
+  float D_max;
+  float B_Tactivation;
   
   int *tmaxflavor;
 
@@ -1031,6 +1039,8 @@ struct All_variables
 	float *T, *C, *CE, *buoyancy;
   int **CF;			/* tracer flavors */
   float *strain;			/* strain */
+  float *strain2; 
+  float *F11, *F12, *F13, *F21, *F22, *F23, *F31, *F32, *F33;
   
 	float *Tdot;
 	float *VI[MAX_LEVELS];		/* viscosity has to soak down to all levels */
@@ -1038,6 +1048,8 @@ struct All_variables
 	float *VB[4], *TB[4];		/* boundary conditions for V,T defined everywhere */
 	float *TW[MAX_LEVELS];		/* nodal weightings */
   float *Vddpart;			/* onyl max level */
+  float *VIY;
+  float *SIGY;
 
 #ifdef CITCOM_ALLOW_ANISOTROPIC_VISC
   float *VI2[MAX_LEVELS],*EVI2[MAX_LEVELS];

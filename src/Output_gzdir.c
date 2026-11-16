@@ -606,6 +606,30 @@ void output_velo_related_gzdir(E, file_number)
 
 	  }
 #endif
+          if(E->control.vtk_yield_out){
+  	    /* yield viscosity component */
+            if(E->viscosity.BDEPV){
+              /* yield viscosity */
+              sprintf(output_file,"%s/%d/viscy.%d.%d.gz",
+              E->control.data_file2,file_number, E->parallel.me,file_number);
+              gzout=safe_gzopen(output_file,"w");
+              gzprintf(gzout,"%3d %7d\n",1,E->lmesh.nno);
+              for(i=1;i<=E->lmesh.nno;i++){
+                gzprintf(gzout,"%12.4e\n",E->VIY[i]);
+              }
+              gzclose(gzout);
+
+              /* yield stress */
+              sprintf(output_file,"%s/%d/sigy.%d.%d.gz",
+              E->control.data_file2,file_number, E->parallel.me,file_number);
+              gzout=safe_gzopen(output_file,"w");
+              gzprintf(gzout,"%3d %7d\n",1,E->lmesh.nno);
+              for(i=1;i<=E->lmesh.nno;i++){
+                 gzprintf(gzout,"%12.4e\n",E->SIGY[i]);
+              }
+              gzclose(gzout);
+            }
+          }
 	}
 	if(E->control.vtk_ddpart_out){
 	  /* 
@@ -643,15 +667,41 @@ void output_velo_related_gzdir(E, file_number)
 	    gzprintf(gzout,"%12.4e\n",E->C[i]);
 	  gzclose(gzout);
 
-	  if(E->tracers_track_strain){
-	    sprintf(output_file,"%s/%d/strain.%d.%d.gz",
-		    E->control.data_file2,file_number, E->parallel.me,file_number);
-	    gzout=safe_gzopen(output_file,"w");
-	    gzprintf(gzout,"%3d %7d\n",1,E->lmesh.nno);
-	    for(i=1;i<=E->lmesh.nno;i++)           
-	      gzprintf(gzout,"%12.4e\n",E->strain[i]);
-	    gzclose(gzout);
-	  }
+	  if(E->control.vtk_strain_out){
+	    if(E->tracers_track_strain){
+	      sprintf(output_file,"%s/%d/strain.%d.%d.gz",
+	  	      E->control.data_file2,file_number, E->parallel.me,file_number);
+  	      gzout=safe_gzopen(output_file,"w");
+	      gzprintf(gzout,"%3d %7d\n",1,E->lmesh.nno);
+	      for(i=1;i<=E->lmesh.nno;i++)           
+	        gzprintf(gzout,"%12.4e\n",E->strain[i]);
+	      gzclose(gzout);
+	    }	 
+          
+            if(E->tracers_track_fse){
+ 	      /* Deformation tensor elements */
+     	      sprintf(output_file,"%s/%d/Fij.%d.%d.gz",
+              E->control.data_file2,file_number, E->parallel.me,file_number);
+	      gzout=safe_gzopen(output_file,"w");
+//	      gzprintf(gzout,"%3d %7d\n",1,E->lmesh.nno);
+	      for(i=1;i<=E->lmesh.nno;i++){
+	        gzprintf(gzout,"%.4e %.4e %.4e %.4e %.4e %.4e %.4e %.4e %.4e \n",
+                  E->F11[i],E->F12[i],E->F13[i],
+                  E->F21[i],E->F22[i],E->F23[i],
+                  E->F31[i],E->F32[i],E->F33[i]);
+              }
+	      gzclose(gzout);
+
+	      /* Maximum ellipsoide strain  */
+	      sprintf(output_file,"%s/%d/strain2.%d.%d.gz",
+	  	      E->control.data_file2,file_number, E->parallel.me,file_number);
+	              gzout=safe_gzopen(output_file,"w");
+	      gzprintf(gzout,"%3d %7d\n",1,E->lmesh.nno);
+	      for(i=1;i<=E->lmesh.nno;i++)
+	        gzprintf(gzout,"%12.4e\n",E->strain2[i]);
+	      gzclose(gzout);
+	    }
+          }
 
 	  if(E->tracers_add_flavors){
 	    sprintf(output_file,"%s/%d/cf.%d.%d.gz",
@@ -976,8 +1026,28 @@ void process_restart_tc_gzdir(struct All_variables *E)
     }
     gzclose(gzin);
 
+    if(E->parallel.me == 0)fprintf(stderr,"restart C OK\n");
+
     if(E->tracers_add_flavors)
       fprintf(stderr,"WARNING: not restoring flavor information!!!\n");
+
+    if(E->viscosity.strain_dep_plasticity){
+      /* reinit the strain dependent yield stress */
+      sprintf(input_file,"%s/%d/sigy.%d.%d.gz",
+              E->convection.old_T_file, E->monitor.solution_cycles,
+              E->parallel.me, E->monitor.solution_cycles);
+      gzin = safe_gzopen(input_file, "r");
+      gzgets (gzin,input_s, 200);
+      sscanf(input_s, "%d %d ", &i, &j);
+      for(node = 1; node <= E->lmesh.nno; node++){
+        gzgets (gzin,input_s, 200);
+        sscanf(input_s, "%f", &E->SIGY[node]);
+      }
+      gzclose(gzin);
+
+      if(E->parallel.me == 0)fprintf(stderr,"restart SDP OK\n");
+    }
+  
 
     if(E->tracers_track_strain){ 
       /* reinit the strain information */
@@ -992,6 +1062,38 @@ void process_restart_tc_gzdir(struct All_variables *E)
 	sscanf(input_s, "%f", &E->strain[node]);
       }
       gzclose(gzin);
+
+      if(E->parallel.me == 0)fprintf(stderr,"restart strain OK\n");
+    }
+
+    if(E->tracers_track_fse){
+      /* reinit elements for the deformation gradient tensor */
+      sprintf(input_file,"%s/%d/Fij.%d.%d.gz",
+	      E->convection.old_T_file, E->monitor.solution_cycles,
+              E->parallel.me, E->monitor.solution_cycles);
+      gzin = safe_gzopen(input_file, "r");
+      for(node = 1; node <= E->lmesh.nno; node ++){
+	 gzgets (gzin,input_s,200);
+	 sscanf(input_s,"%f %f %f %f %f %f %f %f %f",
+			 &(E->F11[node]),&(E->F12[node]),&(E->F13[node]),
+			 &(E->F21[node]),&(E->F22[node]),&(E->F23[node]),
+			 &(E->F31[node]),&(E->F32[node]),&(E->F33[node]));
+      }
+      gzclose(gzin);
+	
+      /* reinit the strain information from strain ellipsoid */
+      sprintf(input_file,"%s/%d/strain2.%d.%d.gz",
+	      E->convection.old_T_file, E->monitor.solution_cycles,
+              E->parallel.me, E->monitor.solution_cycles);
+      gzin = safe_gzopen(input_file, "r");
+      gzgets (gzin,input_s, 200);
+      sscanf(input_s, "%d %d ", &i, &j);
+      for(node = 1; node <= E->lmesh.nno; node++){
+        gzgets (gzin,input_s, 200);
+        sscanf(input_s, "%f", &E->strain2[node]);
+      }
+      gzclose(gzin);
+      if(E->parallel.me == 0)fprintf(stderr,"restart FSE OK\n");
     }
     convection_initial_markers1(E);
   }

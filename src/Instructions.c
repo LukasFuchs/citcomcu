@@ -230,6 +230,10 @@ void allocate_common_vars(struct All_variables *E)
 	E->slice.cen_mflux = (float *)safe_malloc((E->lmesh.nsf + 2) * sizeof(float));
 	E->slice.vxsurf[1] = (float *)safe_malloc((E->lmesh.nsf + 2) * sizeof(float));
 	E->slice.vxsurf[2] = (float *)safe_malloc((E->lmesh.nsf + 2) * sizeof(float));
+/*        if(E->viscosity.BDEPV){
+	   E->VIY = (float *)safe_malloc((E->lmesh.nno + 2) * sizeof(float));
+	   E->SIGY = (float *)safe_malloc((E->lmesh.nno + 2) * sizeof(float));
+	}*/
 
 	E->mat = (int *)safe_malloc((E->lmesh.nel + 2) * sizeof(int));
 
@@ -269,6 +273,13 @@ void allocate_common_vars(struct All_variables *E)
 		E->VI[i] = (float *)safe_malloc((E->lmesh.NNO[i] + 2) * sizeof(float));
 		E->NODE[i] = (unsigned int *)safe_malloc((E->lmesh.NNO[i] + 2) * sizeof(unsigned int));
 		E->TWW[i] = (struct FNODE *)safe_malloc((E->lmesh.NEL[i] + 2) * sizeof(struct FNODE));
+
+ 		if(E->viscosity.BDEPV){
+		  if(i==E->mesh.levmax){        
+		    E->VIY = (float *)safe_malloc((E->lmesh.NNO[i] + 2) * sizeof(float));
+ 	            E->SIGY = (float *)safe_malloc((E->lmesh.NNO[i] + 2) * sizeof(float));
+     		  }
+        	}
 
 		E->NEI[i].nels = (int *)safe_malloc((E->lmesh.NNO[i] + 2) * sizeof(int));
 		E->NEI[i].lnode = (int *)safe_malloc((E->lmesh.NNO[i] + 2) * enodes[E->mesh.nsd] * sizeof(int));
@@ -543,6 +554,8 @@ void global_default_values(struct All_variables *E)
 	E->data.youngs_mod = 1.0e11;
 	E->data.Te = 0.0;
 	E->data.T_sol0 = 1373.0;	/* Dave's values 1991 (for the earth) */
+	E->data.T_mwea = 3.0; 		/* maximum temperature to allow strain accumulation */ 
+        E->data.z_mwea = 0.0;
 	E->data.Tsurf = 273.0;
 	E->data.dTsol_dz = 3.4e-3;
 	E->data.dTsol_dF = 440.0;
@@ -802,6 +815,8 @@ void read_initial_settings(struct All_variables *E)
         input_boolean("vtk_stress_3D",&(E->control.vtk_stress_3D),"off",m);
         input_boolean("vtk_vgm_out",&(E->control.vtk_vgm_out),"off",m);
 	input_boolean("vtk_viscosity_out",&(E->control.vtk_viscosity_out),"on",m);
+	input_boolean("vtk_strain_out",&(E->control.vtk_strain_out),"off",m);
+	input_boolean("vtk_yield_out",&(E->control.vtk_yield_out),"off",m);
 
 	
 	input_string("use_scratch", tmp_string, "local", m);
@@ -858,6 +873,7 @@ void read_initial_settings(struct All_variables *E)
 	input_int("obs_minlongk", &(E->slice.minlong), "1,1", m);
 
 	input_int("solution_cycles_out",&(E->monitor.solution_cycles_out),"5",m);
+	E->monitor.strain_count=0;
 #ifdef USE_GGRD
 
 	/* ggrd control */
@@ -1097,6 +1113,8 @@ void read_initial_settings(struct All_variables *E)
 	input_float("youngs", &(E->data.youngs_mod), "1.0e11", m);
 	input_float("Te", &(E->data.Te), "0.0", m);
 	input_float("Tsol0", &(E->data.T_sol0), "1373.0", m);
+	input_float("max_T_weakening",&(E->data.T_mwea),"3.0",m);
+        input_float("min_z_weakening",&(E->data.z_mwea),"0.0",m);
 	input_float("dTsoldz", &(E->data.dTsol_dz), "3.4e-3", m);
 	input_float("dTsoldF", &(E->data.dTsol_dF), "440.0", m);
 	input_float("dTdz", &(E->data.dT_dz), "0.48e-3", m);

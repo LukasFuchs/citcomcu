@@ -532,6 +532,12 @@ void unify_markers_array(struct All_variables *E, int no_tran, int no_recv)
 					E->Vpred[1][ii] = E->Vpred[1][i];
 					E->Vpred[2][ii] = E->Vpred[2][i];
 					E->Vpred[3][ii] = E->Vpred[3][i];
+					if(E->tracers_track_strain){
+	                                  E->tracer_strain[ii*tscol] = E->tracer_strain[i*tscol];
+        	                          if(E->tracers_track_fse)
+                	                    for(k=0;k<9;k++)
+                        	              E->tracer_strain[ii*tscol+1+k] = E->tracer_strain[i*tscol+1+k];
+					}
 					E->XMC[1][ii] = E->XMC[1][i];
 					E->XMC[2][ii] = E->XMC[2][i];
 					E->XMC[3][ii] = E->XMC[3][i];
@@ -542,13 +548,6 @@ void unify_markers_array(struct All_variables *E, int no_tran, int no_recv)
 					E->CElement[ii] = E->CElement[i];
 					for(k=0;k < E->tracers_add_flavors;k++)
 					  E->tflavors[ii][k] = E->tflavors[i][k];
-					if(E->tracers_track_strain)
-					  E->tracer_strain[ii] = E->tracer_strain[i];
-					if(E->tracers_track_fse)
-					  for(k=0;k<9;k++)
-					    E->tracer_strain[ii*tscol+1+k] =  E->tracer_strain[i*tscol+1+k];
-
-					
 					E->traces_leave[ii] = 0;
 				}
 			}
@@ -578,8 +577,7 @@ void prepare_transfer_arrays(struct All_variables *E)
     /* strain entries per tracer */
     tscol = (E->tracers_track_fse)?(10):(1);
     asizet = (markers + 1) * (E->mesh.nsd * 2 + tscol);
-    bsize = (markers + 1) * (2 + E->tracers_add_flavors);
-   
+    bsize = (markers + 1) * (2 + E->tracers_add_flavors);  
     been_here = 1;
   }
   parallel_process_sync();
@@ -699,7 +697,11 @@ void transfer_marker_properties(struct All_variables *E, float *C, int con)
   if(E->tracers_track_strain){	/* update tracer strain */
     if(!con)
       evolve_tracer_strain(E);
-    get_strain_from_markers(E,E->strain);
+    if(E->tracers_track_fse){
+      get_strain_from_markers_fse(E,E->strain,E->strain2,E->F11,E->F12,E->F13,E->F21,E->F22,E->F23,E->F31,E->F32,E->F33);
+    }else{
+      get_strain_from_markers(E,E->strain);
+    }
   }
 }
 
@@ -954,7 +956,179 @@ void get_strain_from_markers(struct All_variables *E, float *strain)
 }
 
 
+/* ================================================ */
 
+/* 
+
+   obtain strain from markers and assign to all nodes
+
+*/
+void get_strain_from_markers_fse(struct All_variables *E, float *strain, float *strain2, float *F11, float *F12, float *F13, float *F21, float *F22, float *F23, float *F31, float *F32, float *F33)
+{
+   int el, itracer, imark, jnode, node,i,j;
+   float *element_strain, *element_strain2,strain3;
+   float *eF11, *eF12, *eF13;
+   float *eF21, *eF22, *eF23; 
+   float *eF31, *eF32, *eF33;
+   double F[3][3],FFT[3][3],eval[3],evec[3][3],epsilon;
+   int *element_count;
+
+   static int been_here = 0,tscol;
+   const int nno = E->lmesh.nno;
+   const int nel = E->lmesh.nel;
+   const int dims = E->mesh.nsd;
+   const int ends = enodes[dims];
+   const int lev = E->mesh.levmax;
+   if(!been_here){
+     tscol = (E->tracers_track_fse)?(10):(1);
+     been_here = 1;
+   }
+
+   E->monitor.strain_count += 1;
+
+   if(E->monitor.strain_count > 2)
+      E->monitor.strain_count = 1;
+ 
+   element_strain = (float *)calloc((nel + 1), sizeof(float));
+   element_strain2 = (float *)calloc((nel + 1), sizeof(float));
+   element_count = (int *)calloc((nel + 1),sizeof(int));
+
+   eF11 = (float *)calloc((nel +1), sizeof(float));
+   eF12 = (float *)calloc((nel +1), sizeof(float));
+   eF13 = (float *)calloc((nel +1), sizeof(float));
+   eF21 = (float *)calloc((nel +1), sizeof(float));
+   eF22 = (float *)calloc((nel +1), sizeof(float));
+   eF23 = (float *)calloc((nel +1), sizeof(float));
+   eF31 = (float *)calloc((nel +1), sizeof(float));
+   eF32 = (float *)calloc((nel +1), sizeof(float));
+   eF33 = (float *)calloc((nel +1), sizeof(float));
+   /* 
+        compute based on the mean strain of each element
+   */
+   for(i = 1; i <= nno; i++){
+     strain[i] = 0.0;
+     strain2[i] = 0.0;
+     F11[i] = 0.0; F12[i] = 0.0; F13[i] = 0.0;
+     F21[i] = 0.0; F22[i] = 0.0; F23[i] = 0.0;
+     F31[i] = 0.0; F32[i] = 0.0; F33[i] = 0.0;
+   }
+   for(imark = 1; imark <= E->advection.markers; imark++){
+     el = E->CElement[imark];
+
+     eval[1] = eval[2] = eval[3] = 0.0;
+     strain3 = 0.0; 
+
+     get_3x3_from_9vec_fl(F,(E->tracer_strain+imark*tscol+1));
+
+     // Get Finger-tensor F * F^T
+     F_times_FT(F,FFT);
+
+     // Get Eigenvalues for FFT  
+     ggrd_solve_eigen3x3(FFT,eval,evec,E);
+
+     // Calculate the maximum strain from the strain ellipsoid
+     if (eval[0] > 1e16 || eval[2] < 1e-16){
+	eval[0] = 1e16; 
+	eval[1] = 1.0; 
+	eval[2] = 1e-16;
+     }
+     
+     strain3 = max(0.5*log10(eval[0]/eval[1]),0.5*log10(eval[1]/eval[2]));
+
+/*     if(imark==24 && E->monitor.strain_count == 1){
+     fprintf(E->fp2,"%i %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %10.4e %f %f %i \n",imark,E->advection.timestep,
+                 F[0][0],F[0][1],F[0][2],
+                 F[1][0],F[1][1],F[1][2],
+                 F[2][0],F[2][1],F[2][2],
+                 eval[0],eval[1],eval[2],
+		 E->XMC[1][imark],E->XMC[3][imark],E->monitor.solution_cycles);
+     }*/
+
+     element_strain2[el] += strain3;
+
+     element_strain[el] += E->tracer_strain[imark*tscol];
+
+     eF11[el] += E->tracer_strain[imark*tscol+1];
+     eF12[el] += E->tracer_strain[imark*tscol+2];
+     eF13[el] += E->tracer_strain[imark*tscol+3];
+     eF21[el] += E->tracer_strain[imark*tscol+4];
+     eF22[el] += E->tracer_strain[imark*tscol+5];
+     eF23[el] += E->tracer_strain[imark*tscol+6];
+     eF31[el] += E->tracer_strain[imark*tscol+7];
+     eF32[el] += E->tracer_strain[imark*tscol+8];
+     eF33[el] += E->tracer_strain[imark*tscol+9];
+
+     element_count[el] ++;
+   }
+   for(el = 1; el <= nel; el++){
+     if(element_count[el]){
+       element_strain[el] /= (float)element_count[el];
+       element_strain2[el] /= (float)element_count[el];
+
+       eF11[el] /= (float)element_count[el];
+       eF12[el] /= (float)element_count[el];
+       eF13[el] /= (float)element_count[el];
+       eF21[el] /= (float)element_count[el];
+       eF22[el] /= (float)element_count[el];
+       eF23[el] /= (float)element_count[el];
+       eF31[el] /= (float)element_count[el];
+       eF32[el] /= (float)element_count[el];
+       eF33[el] /= (float)element_count[el];
+     }
+     for(j = 1; j <= ends; j++){
+       node = E->ien[el].node[j];
+       strain[node] += E->TWW[lev][el].node[j] * element_strain[el];
+       strain2[node] += E->TWW[lev][el].node[j] * element_strain2[el];
+
+       F11[node] += E->TWW[lev][el].node[j] * eF11[el];
+       F12[node] += E->TWW[lev][el].node[j] * eF12[el];
+       F13[node] += E->TWW[lev][el].node[j] * eF13[el];
+       F21[node] += E->TWW[lev][el].node[j] * eF21[el];
+       F22[node] += E->TWW[lev][el].node[j] * eF22[el];
+       F23[node] += E->TWW[lev][el].node[j] * eF23[el];
+       F31[node] += E->TWW[lev][el].node[j] * eF31[el];
+       F32[node] += E->TWW[lev][el].node[j] * eF32[el];
+       F33[node] += E->TWW[lev][el].node[j] * eF33[el];
+     }
+   }
+   exchange_node_f20(E, strain, E->mesh.levmax);
+   exchange_node_f20(E, strain2, E->mesh.levmax); 
+
+   exchange_node_f20(E, F11, E->mesh.levmax);
+   exchange_node_f20(E, F12, E->mesh.levmax);
+   exchange_node_f20(E, F13, E->mesh.levmax);
+   exchange_node_f20(E, F21, E->mesh.levmax);
+   exchange_node_f20(E, F22, E->mesh.levmax);
+   exchange_node_f20(E, F23, E->mesh.levmax);
+   exchange_node_f20(E, F31, E->mesh.levmax);
+   exchange_node_f20(E, F32, E->mesh.levmax);
+   exchange_node_f20(E, F33, E->mesh.levmax);
+
+   for(node = 1; node <= nno; node++){
+     strain[node] *= E->Mass[node];
+     strain2[node] *= E->Mass[node];
+
+     F11[node] *= E->Mass[node];
+     F12[node] *= E->Mass[node];
+     F13[node] *= E->Mass[node];
+     F21[node] *= E->Mass[node];
+     F22[node] *= E->Mass[node];
+     F23[node] *= E->Mass[node];
+     F31[node] *= E->Mass[node];
+     F32[node] *= E->Mass[node];
+     F33[node] *= E->Mass[node];
+   }
+
+   if(E->monitor.strain_count > 2)
+      E->monitor.strain_count = 1;
+
+   free(element_strain); 
+   free(element_strain2);
+   free(element_count);
+   free(eF11),free(eF12),free(eF13);
+   free(eF21),free(eF22),free(eF23);
+   free(eF31),free(eF32),free(eF33);
+}
 
 /* ================================================ */
 void element_markers(struct All_variables *E, int con)

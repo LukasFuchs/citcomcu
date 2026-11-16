@@ -21,7 +21,8 @@ GMT_DIR = $(GMTHOME)
 NETCDF_DIR = $(NETCDFHOME)
 LIB_PATH= -L$(HC_HOME)/objects/x86_64/ -L$(GMT_DIR)/lib/ -L$(NETCDF_DIR)/lib/
 LIB_LIST= -lz -lggrd -lhc -lgmt -lnetcdf
-
+MATHLIBS ?= -llapack -lblas
+FTRN_LIB ?= -lgfortran
 
 
 # use the expokit stuff?

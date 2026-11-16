@@ -1,0 +1,4 @@
+*.o
+*.a
+citcom.mpi
+build.log

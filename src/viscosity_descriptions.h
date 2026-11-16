@@ -126,6 +126,7 @@ struct VISC_OPT
 	float N0[CITCOM_CU_VISC_MAXLAYER];
         float E[CITCOM_CU_VISC_MAXLAYER];
 	float T[CITCOM_CU_VISC_MAXLAYER], Z[CITCOM_CU_VISC_MAXLAYER];
+	float Te[CITCOM_CU_VISC_MAXLAYER];
 
 
   /* byerlee :
@@ -148,7 +149,8 @@ struct VISC_OPT
   float abyerlee[CITCOM_CU_VISC_MAXLAYER],bbyerlee[CITCOM_CU_VISC_MAXLAYER],
     lbyerlee[CITCOM_CU_VISC_MAXLAYER];
 
-
+  int bdeplim_layer; 		/* limi to top layers if selected */
+  
   float plasticity_viscosity_offset;
   int plasticity_trans;		/* 1: effective viscosity approach
 				   0: min viscosity approach
@@ -160,7 +162,7 @@ struct VISC_OPT
 				   0: use non-dimensional values for yield stress
 				*/
   int strain_dep_plasticity;
-  float plastic_strain_func[3];
+//  float plastic_strain_func[3];
 
   int CDEPV;			/* composition dependent viscosity */
   int cdepv_absolute;		/* make the composition an absolute viscosity,

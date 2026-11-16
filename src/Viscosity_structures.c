@@ -72,6 +72,7 @@ void viscosity_parameters(struct All_variables *E)
 	{
 		E->viscosity.N0[i] = 1.0;
 		E->viscosity.T[i] = 0.0;
+		E->viscosity.Te[i] = 0.5;
 		E->viscosity.Z[i] = 0.0;
 		E->viscosity.E[i] = 0.0;
 
@@ -142,14 +143,13 @@ void viscosity_parameters(struct All_variables *E)
 	}
 
 	input_float_vector("viscT", E->viscosity.num_mat, (E->viscosity.T),m); 
-	input_float_vector("viscT1", E->viscosity.num_mat, (E->viscosity.T),m);
 	input_float_vector("viscZ", E->viscosity.num_mat, (E->viscosity.Z),m);
 	input_float_vector("viscE", E->viscosity.num_mat, (E->viscosity.E),m);
+	input_float_vector("viscTe", E->viscosity.num_mat, (E->viscosity.Te),m);
 	input_float_vector("visc0", E->viscosity.num_mat, (E->viscosity.N0),m);
 	input_float_vector("viscN0", E->viscosity.num_mat, (E->viscosity.N0),m); /* should probably remove */
 	
-	input_boolean("strain_dep_plasticity",&(E->viscosity.strain_dep_plasticity),"off",m);
-	input_float_vector("plastic_strain_func",3,E->viscosity.plastic_strain_func,m); /* high/low/strain */
+	input_int("strain_dep_plasticity",&(E->viscosity.strain_dep_plasticity),"0",m);
 
 	input_boolean("TDEPV", &(E->viscosity.TDEPV), "on",m);
 	input_boolean("SDEPV", &(E->viscosity.SDEPV), "off",m);
@@ -198,8 +198,9 @@ void viscosity_parameters(struct All_variables *E)
 			   (E->viscosity.bbyerlee),m);
 	input_float_vector("lbyerlee",E->viscosity.num_mat,
 			   (E->viscosity.lbyerlee),m);
-	
-	
+	/* limit to top layers */
+	input_int("bdeplim_layer",&(E->viscosity.bdeplim_layer),"0",m);
+
 	/* 1: transition 0: min/max transition */
 	input_boolean("plasticity_trans",&(E->viscosity.plasticity_trans),"on",m);
 	/* SRW */
@@ -495,7 +496,7 @@ void visc_from_T(struct All_variables *E, float *Eta, float *EEta, int propogate
 	//float c1, c2, c3, zero, e_6, one, eta0, Tave, depth, temp, tempa, TT[9];
 	float zero, one, temp, tempa, TT[9];
 	//double ztop, zbotm, zz, visc1, area1, temp1, temp2, temp3, temp4;
-	double ztop, zbotm, zz, temp1, temp2, temp3, temp4;
+	double ztop, zbotm, zz, temp1, temp2, temp3, temp4,Tcrit;
 	float *Xtmp[4];
 	static int visits = 0;
 	static float *Tadi;
@@ -696,7 +697,7 @@ void visc_from_T(struct All_variables *E, float *Eta, float *EEta, int propogate
 	    break;
 	  case 11:
             /* 
-               eta = eta0 * exp(E/(T+T0) - E/(0.5+T0))
+               eta = eta0 * exp(E/(T+T0) - E/(Te+T0))
             */
             for(i = 1; i <= nel; i++)
               {
@@ -713,7 +714,70 @@ void visc_from_T(struct All_variables *E, float *Eta, float *EEta, int propogate
                       {
                         temp += max(zero, TT[kk]) * E->N.vpt[GNVINDEX(kk, jj)];;
                       }
-                    EEta[(i - 1) * vpts + jj] = tempa * exp((E->viscosity.E[l]) / (temp + E->viscosity.T[l]) - (E->viscosity.E[l]) / (0.5 + E->viscosity.T[l]));
+                    EEta[(i - 1) * vpts + jj] = tempa * exp((E->viscosity.E[l]) / (temp + E->viscosity.T[l]) - (E->viscosity.E[l]) / (E->viscosity.Te[l] + E->viscosity.T[l]));
+                  }
+              }
+            break;
+/*          case 12:
+            *
+ *                eta = eta0 * exp( A/(T+1) - A/2)
+ *                            
+            for(i = 1; i <= nel; i++)
+              {
+                l = E->mat[i] - 1 ;
+                tempa = E->viscosity.N0[l];
+
+                for(kk = 1; kk <= ends; kk++)
+                {
+		  TT[kk] = E->T[E->ien[i].node[kk]];
+		}
+
+                for(jj = 1; jj <= vpts; jj++)
+                  {
+                    temp = 1.0e-32;
+                    for(kk = 1; kk <= ends; kk++)
+                      {
+                        temp += max(zero, TT[kk]) * E->N.vpt[GNVINDEX(kk, jj)];;
+                      }
+                    EEta[(i - 1) * vpts + jj] = tempa * exp( (E->viscosity.E[l]) / (temp + 1.0) - (E->viscosity.E[l]) / (2.0));
+                  }
+              }
+            break; 
+	*/
+          case 13:
+            /* 
+ *  *                eta = eta0 * exp(A/(T+1) - A/2)
+ *  		     Add asthenospheric rheology:
+ *  		     eta(z,T) = eta(T) if T < Tsol0 + 2(1-z)
+ *  		     eta(z,T) = 0.1*eta(T) if T > Tsol0 + 2(1-z)
+ *   *                            */
+            for(i = 1; i <= nel; i++)
+              {
+                l = E->mat[i] - 1 ;
+                tempa = E->viscosity.N0[l];
+
+                for(kk = 1; kk <= ends; kk++)
+                {
+                  TT[kk] = E->T[E->ien[i].node[kk]];
+                }
+
+                for(jj = 1; jj <= vpts; jj++)
+                  {
+                    temp = 1.0e-32;
+		    zz = 0.0;
+	 	    Tcrit = 0.0;
+                    for(kk = 1; kk <= ends; kk++)
+                      {
+                        temp += max(zero, TT[kk]) * E->N.vpt[GNVINDEX(kk, jj)];
+			zz += Xtmp[3][E->ien[i].node[kk]] * E->N.vpt[GNVINDEX(kk, jj)]; /* depth */
+                      }
+		    Tcrit = E->data.T_sol0 + (2.0*(1.0-zz));
+		    if(temp<Tcrit){
+		       EEta[(i - 1) * vpts + jj] = tempa * exp( (E->viscosity.E[l]) / (temp + 1.0) - (E->viscosity.E[l]) / (2.0));
+		    }
+ 		    else if(temp>=Tcrit){
+		       EEta[(i - 1) * vpts + jj] = 0.1 * tempa * exp( (E->viscosity.E[l]) / (temp + 1.0) - (E->viscosity.E[l]) / (2.0));
+		    }
                   }
               }
             break;
@@ -980,7 +1044,11 @@ void strain_rate_2_inv(struct All_variables *E, float *EEDOT,
 		       int SQRT, int save_vgm, float *vgm)
 {
   double edot[4][4], dudx[4][4], rtf[4][9];
-  float VV[4][9], Vxyz[9][9];
+  double VV[4][9],lgrad[3][3],evel[3];
+  float Vxyz[9][9];
+  static struct CC Cc; 
+  static struct CCX Ccx; 
+  
   
   //int e, i, j, p, q, n, nel, k;
   int e, i, j, p, q, n, nel,l;
@@ -989,16 +1057,21 @@ void strain_rate_2_inv(struct All_variables *E, float *EEDOT,
   const int ends = enodes[dims];
   const int lev = E->mesh.levmax;
   const int ppts = ppoints[dims];
+  /* for spherical */
+  const int sgmode = 1;		/* 0: default (is it working?) 1: using VGM method */
   
   nel = E->lmesh.nel;
   
-  
+
   if(E->control.Rsphere){
     
     for(e = 1; e <= nel; e++){
 
-      get_rtf(E, e, 1, rtf, lev); /* pressure */
       
+      get_rtf(E, e, 1, rtf, lev); /* pressure */
+      if(sgmode)
+	construct_c3x3matrix_el(E,e,&Cc,&Ccx,lev,1);
+
       for(i = 1; i <= ends; i++){
 	n = E->ien[e].node[i];
 	VV[1][i] = E->V[1][n];
@@ -1006,37 +1079,59 @@ void strain_rate_2_inv(struct All_variables *E, float *EEDOT,
 	VV[3][i] = E->V[3][n];
       }
       
-      for(j = 1; j <= ppts; j++){
-	Vxyz[1][j] = 0.0;
-	Vxyz[2][j] = 0.0;
-	Vxyz[3][j] = 0.0;
-	Vxyz[4][j] = 0.0;
-	Vxyz[5][j] = 0.0;
-	Vxyz[6][j] = 0.0;
+     
+      if(sgmode || save_vgm)
+        get_vgm_p(VV,&(E->N),&(E->GNX[lev][e]),&Cc,&Ccx,rtf,
+              E->mesh.nsd,ppts,ends,TRUE,lgrad,evel);
+      if(save_vgm){
+        for(l=0,p=0;p<dims;p++){
+          for(q=0;q<dims;q++){
+            vgm[e*9+l] = lgrad[p][q];
+            l++;           
+          }
+        }
       }
-      if(save_vgm)
-	myerror("save VGM not implemented yet for spherical",E);
-      /* remember to add for spherical!!! */
-      for(j = 1; j <= ppts; j++){ /* only makes "sense" for ppts = 1 */
-	for(i = 1; i <= ends; i++){
-	  Vxyz[1][j] += (VV[1][i] * E->gNX[e].ppt[GNPXINDEX(0, i, j)] + VV[3][i] * E->N.ppt[GNPINDEX(i, j)]) * rtf[3][j]; /* tt */
-	  Vxyz[2][j] += ((VV[2][i] * E->gNX[e].ppt[GNPXINDEX(1, i, j)] + VV[1][i] * E->N.ppt[GNPINDEX(i, j)] * cos(rtf[1][j])) / sin(rtf[1][j]) + VV[3][i] * E->N.ppt[GNPINDEX(i, j)]) * rtf[3][j]; /* pp */
-	  Vxyz[3][j] += VV[3][i] * E->gNX[e].ppt[GNPXINDEX(2, i, j)]; /* rr */
-	  
-	  Vxyz[4][j] += ((VV[1][i] * E->gNX[e].ppt[GNPXINDEX(1, i, j)] - VV[2][i] * E->N.ppt[GNPINDEX(i, j)] * cos(rtf[1][j])) / sin(rtf[1][j]) + VV[2][i] * E->gNX[e].ppt[GNPXINDEX(0, i, j)]) * rtf[3][j]; /* tp */
-	  Vxyz[5][j] += VV[1][i] * E->gNX[e].ppt[GNPXINDEX(2, i, j)] + rtf[3][j] * (VV[3][i] * E->gNX[e].ppt[GNPXINDEX(0, i, j)] - VV[1][i] * E->N.ppt[GNPINDEX(i, j)]); /* tr */
-	  Vxyz[6][j] += VV[2][i] * E->gNX[e].ppt[GNPXINDEX(2, i, j)] + rtf[3][j] * (VV[3][i] * E->gNX[e].ppt[GNPXINDEX(1, i, j)] / sin(rtf[1][j]) - VV[2][i] * E->N.ppt[GNPINDEX(i, j)]); /* pr */
+      if(sgmode){
+	
+	edot[1][1] = lgrad[0][0];		/* tt */
+	edot[2][2] = lgrad[1][1];		/* pp */
+	edot[3][3] = lgrad[2][2];		/* rr */
+	edot[1][2] = 0.5*(lgrad[0][1]+lgrad[1][0]);		/* tp */
+	edot[1][3] = 0.5*(lgrad[0][2]+lgrad[2][0]);		/* rt */
+	edot[2][3] = 0.5*(lgrad[1][2]+lgrad[2][1]);		/* rp */
+	
+      }else{
+
+	for(j = 1; j <= ppts; j++){ /* only makes "sense" for ppts = 1 */
+
+	  Vxyz[1][j] = 0.0;
+	  Vxyz[2][j] = 0.0;
+	  Vxyz[3][j] = 0.0;
+	  Vxyz[4][j] = 0.0;
+	  Vxyz[5][j] = 0.0;
+	  Vxyz[6][j] = 0.0;
+
+	  for(i = 1; i <= ends; i++){
+	    Vxyz[1][j] += (VV[1][i] * E->gNX[e].ppt[GNPXINDEX(0, i, j)] + VV[3][i] * E->N.ppt[GNPINDEX(i, j)]) * rtf[3][j]; /* tt */
+	    Vxyz[2][j] += ((VV[2][i] * E->gNX[e].ppt[GNPXINDEX(1, i, j)] + VV[1][i] * E->N.ppt[GNPINDEX(i, j)] * cos(rtf[1][j])) / sin(rtf[1][j]) + VV[3][i] * E->N.ppt[GNPINDEX(i, j)]) * rtf[3][j]; /* pp */
+	    Vxyz[3][j] += VV[3][i] * E->gNX[e].ppt[GNPXINDEX(2, i, j)]; /* rr */
+	    
+	    Vxyz[4][j] += ((VV[1][i] * E->gNX[e].ppt[GNPXINDEX(1, i, j)] - VV[2][i] * E->N.ppt[GNPINDEX(i, j)] * cos(rtf[1][j])) / sin(rtf[1][j]) + VV[2][i] * E->gNX[e].ppt[GNPXINDEX(0, i, j)]) * rtf[3][j]; /* tp */
+	    Vxyz[5][j] += VV[1][i] * E->gNX[e].ppt[GNPXINDEX(2, i, j)] + rtf[3][j] * (VV[3][i] * E->gNX[e].ppt[GNPXINDEX(0, i, j)] - VV[1][i] * E->N.ppt[GNPINDEX(i, j)]); /* tr */
+	    Vxyz[6][j] += VV[2][i] * E->gNX[e].ppt[GNPXINDEX(2, i, j)] + rtf[3][j] * (VV[3][i] * E->gNX[e].ppt[GNPXINDEX(1, i, j)] / sin(rtf[1][j]) - VV[2][i] * E->N.ppt[GNPINDEX(i, j)]); /* pr */
+	  }
+	  edot[1][1] += 2.0 * Vxyz[1][j]; /* this should be a summation */
+	  edot[2][2] += 2.0 * Vxyz[2][j];
+	  edot[3][3] += 2.0 * Vxyz[3][j];
+	  edot[1][2] += Vxyz[4][j];
+	  edot[1][3] += Vxyz[5][j];
+	  edot[2][3] += Vxyz[6][j];
 	}
-	edot[1][1] = 2.0 * Vxyz[1][j]; /* this should be a summation */
-	edot[2][2] = 2.0 * Vxyz[2][j];
-	edot[3][3] = 2.0 * Vxyz[3][j];
-	edot[1][2] = Vxyz[4][j];
-	edot[1][3] = Vxyz[5][j];
-	edot[2][3] = Vxyz[6][j];
       }
       /* /\* eps: rr, rt, rp, tt, tp, pp *\/ */
-      /* if(e < 5)fprintf(stderr,"1: %11.4e %11.4e %11.4e %11.4e %11.4e %11.4e\n",edot[3][3]/2,edot[1][3]/2,edot[2][3]/2,edot[1][1]/2,edot[1][2]/2,edot[2][2]/2); */
-      EEDOT[e] = edot[1][1] * edot[1][1] + edot[1][2] * edot[1][2] * 2.0 + edot[2][2] * edot[2][2] + edot[2][3] * edot[2][3] * 2.0 + edot[3][3] * edot[3][3] + edot[1][3] * edot[1][3] * 2.0;
+      //if(e < 5)fprintf(stderr,"1: %11.4e %11.4e %11.4e %11.4e %11.4e %11.4e\n",edot[3][3],edot[1][3],edot[2][3],edot[1][1],edot[1][2],edot[2][2]); 
+      EEDOT[e] = edot[1][1] * edot[1][1] + edot[1][2] * edot[1][2] * 2.0 + edot[2][2] * edot[2][2] + 
+	edot[2][3] * edot[2][3] * 2.0 + edot[3][3] * edot[3][3] + edot[1][3] * edot[1][3] * 2.0;
       
     }
 
@@ -1472,10 +1567,10 @@ static void visc_from_B(struct All_variables *E, float *Eta, float *EEta,
 {
   static int visited = 0;
   float scale,stress_magnitude,depth,exponent1,eta_old,eta_old2,eta_new;
-  float *eedot;
+  float *eedot,*eetty,*esigY;
   float zzz,zz[9],wmax,weight,strain[9],estrain,fac,CC[9];
   int point_flavor,tfn[9],tracer_value;
-  float tau,tau2,ettby,ettnew;
+  float tau,tau2,ettby,ettnew,tempa;
   int m,l,z,jj,kk,i,node,tepoints,epoints,npc,tnpc;
   static float ndz_to_m;
   float *fdummy;
@@ -1488,12 +1583,17 @@ static void visc_from_B(struct All_variables *E, float *Eta, float *EEta,
   epoints = nel * vpts;
   
   eedot = (float *) safe_malloc((2+nel)*sizeof(float));
-  
- 
+  eetty = (float *) safe_malloc((2+nel)*sizeof(float));
+  esigY = (float *) safe_malloc((2+nel)*sizeof(float)); 
 
 #ifdef DEBUG
   out=fopen("tmp.visc","w");
 #endif
+  if( (visited == 0) ){
+    if(E->parallel.me==0)
+      fprintf(stderr,"storing yield viscosity for %i\n",E->lmesh.nno);
+  }
+
   if (!visited)   {
     /* 
        scaling from nod-dim radius (0...1) to m 
@@ -1517,20 +1617,25 @@ static void visc_from_B(struct All_variables *E, float *Eta, float *EEta,
 	      E->viscosity.plasticity_trans,
 	      E->viscosity.plasticity_viscosity_offset);
       fprintf(stderr,"\tpsrw: %i\n",E->viscosity.psrw);
+      if(E->viscosity.bdeplim_layer)
+	fprintf(stderr,"limiting plastic yielding to %i top layers\n",E->viscosity.bdeplim_layer);
+
       if(E->viscosity.pdepv_for_zero_comp && E->viscosity.pdepv_for_flavor)
 	myerror("error, can't have both flavor and composition dependent plasticity",E);
       if(E->viscosity.pdepv_for_flavor){
 	if((E->tracers_add_flavors < 1)  || (!E->control.composition))
 	  myerror("Byerlee is to apply only to certain flavor, but no flavor is set",E);
       }
-      if(E->viscosity.strain_dep_plasticity){
+      if(E->viscosity.strain_dep_plasticity > 0){
 	if(!E->control.composition)
 	  myerror("strain dependent plasticity requires composition on",E);
 	if(!E->tracers_track_strain)
 	  myerror("strain dependent plasticity requires track_strain on",E);
 	if(E->parallel.me == 0)
-	  fprintf(stderr,"strain dependent plasticity: zero strain: %g, drops to %g at strain %g\n",
-		  E->viscosity.plastic_strain_func[0],E->viscosity.plastic_strain_func[1],E->viscosity.plastic_strain_func[2]);
+//	  fprintf(stderr,"strain dependent plasticity: zero strain: %g, drops to %g at strain %g\n",
+//		  E->viscosity.plastic_strain_func[0],E->viscosity.plastic_strain_func[1],E->viscosity.plastic_strain_func[2]);
+	  fprintf(stderr,"strain dependent plasticity: Yield stress drops by %g percent at strain %g\n",
+                  E->D_max*100.0,E->gamma_cr);
       }
 	
     }
@@ -1552,70 +1657,65 @@ static void visc_from_B(struct All_variables *E, float *Eta, float *EEta,
     npc=0;
     for(i=1;i <= nel;i++)   {	
       l = E->mat[i] - 1;	/* material of element */
-      for(kk=1;kk <= ends;kk++){/* loop through integration points*/
-	node = E->ien[i].node[kk];
-	if(E->control.Rsphere)
-	  zz[kk] = (1.0 - E->SX[3][node]); 
-	else
-	  zz[kk] = (1.0 - E->X[3][node]); 
-	if(E->viscosity.plasticity_dimensional)
-	  zz[kk] *= ndz_to_m;	/* scale to meters */
-	/* 
-	   which property to use for tracers
-	*/
-	if(E->viscosity.pdepv_for_flavor)
-	  tfn[kk]= E->CF[0][node];
-	else if(E->viscosity.pdepv_for_zero_comp)
-	  tfn[kk]= E->C[node];
-	if(E->viscosity.strain_dep_plasticity)
-	  strain[kk] = E->strain[node];
-      }
-      for(jj=1;jj <= vpts;jj++) { 
-	zzz = wmax = estrain = 0.0;
-	for(kk=1;kk <= ends;kk++)   {
-	  weight = E->N.vpt[GNVINDEX(kk,jj)];
-	  zzz += zz[kk] * weight;
-	  if(E->viscosity.pdepv_for_flavor || E->viscosity.pdepv_for_zero_comp){
-	    if(weight > wmax){
-	      wmax = weight;
-	      point_flavor = tfn[kk]; /* use the most important nodal flavor */
+      if((!E->viscosity.bdeplim_layer) || (l < E->viscosity.bdeplim_layer)){
+	for(kk=1;kk <= ends;kk++){/* loop through integration points*/
+	  node = E->ien[i].node[kk];
+	  if(E->control.Rsphere)
+	    zz[kk] = (1.0 - E->SX[3][node]); 
+	  else
+	    zz[kk] = (1.0 - E->X[3][node]); 
+	  if(E->viscosity.plasticity_dimensional)
+	    zz[kk] *= ndz_to_m;	/* scale to meters */
+	  /* 
+	     which property to use for tracers
+	  */
+	  if(E->viscosity.pdepv_for_flavor)
+	    tfn[kk]= E->CF[0][node];
+	  else if(E->viscosity.pdepv_for_zero_comp)
+	    tfn[kk]= E->C[node];
+	}
+	for(jj=1;jj <= vpts;jj++) { 
+	  zzz = wmax = estrain = 0.0;
+	  for(kk=1;kk <= ends;kk++)   {
+	    weight = E->N.vpt[GNVINDEX(kk,jj)];
+	    zzz += zz[kk] * weight;
+	    if(E->viscosity.pdepv_for_flavor || E->viscosity.pdepv_for_zero_comp){
+	      if(weight > wmax){
+		wmax = weight;
+		point_flavor = tfn[kk]; /* use the most important nodal flavor */
+	      }
 	    }
 	  }
-	  if(E->viscosity.strain_dep_plasticity)
-	    estrain += strain[kk] * weight;
-	}
-	if(((E->viscosity.pdepv_for_flavor == 0) && (E->viscosity.pdepv_for_zero_comp == 0))|| /* regular operation */
-	   (E->viscosity.pdepv_for_flavor && (point_flavor == E->viscosity.pdepv_for_flavor))||	/* flavor
-												   dependent
-												   plasticity */
-	   (E->viscosity.pdepv_for_zero_comp && (point_flavor < 0.5)) /* dependent
-									 on
-									 regular
-									 composition */
-
-	   ){
-	  npc++;
-	  /* plasticity applies */
-	  if(E->viscosity.plasticity_dimensional){
-	    tau = (E->viscosity.abyerlee[l] * zzz + 
-		   E->viscosity.bbyerlee[l]) * E->viscosity.lbyerlee[l];
-	    tau /= E->monitor.tau_scale;
-	  }else{
-	    tau = E->viscosity.abyerlee[l] * zzz + E->viscosity.bbyerlee[l];
-	    tau = min(tau,  E->viscosity.lbyerlee[l]);
+	  if(((E->viscosity.pdepv_for_flavor == 0) && (E->viscosity.pdepv_for_zero_comp == 0))|| /* regular operation */
+	     (E->viscosity.pdepv_for_flavor && (point_flavor == E->viscosity.pdepv_for_flavor))||	/* flavor
+													   dependent
+													   plasticity */
+	     (E->viscosity.pdepv_for_zero_comp && (point_flavor < 0.5)) /* dependent
+									   on
+									   regular
+									   composition */
+	     
+	     ){
+	    npc++;
+	    /* plasticity applies */
+	    if(E->viscosity.plasticity_dimensional){
+	      tau = (E->viscosity.abyerlee[l] * zzz + 
+		     E->viscosity.bbyerlee[l]) * E->viscosity.lbyerlee[l];
+	      tau /= E->monitor.tau_scale;
+	    }else{
+	      tau = E->viscosity.abyerlee[l] + zzz * E->viscosity.bbyerlee[l];
+	      tau = min(tau,  E->viscosity.lbyerlee[l]);
+	    }
+	    if(visited  && (tau < 1e15)){
+	      tau2 = tau * tau;
+	      eta_old = EEta[ (i-1)*vpts + jj ] ;
+	      eta_old2 = eta_old * eta_old;
+	      eta_new = (tau2 * eta_old)/(tau2 + 2.0 * eta_old2 * eedot[i]);
+	      EEta[ (i-1)*vpts + jj ] = eta_new;
+	      //if(E->parallel.me==0)fprintf(stderr,"tau: %11.4e eII: %11.4e eta_old: %11.4e eta_new: %11.4e\n",tau, eedot[i],eta_old,eta_new);
+	    }
+	    
 	  }
-	  if(E->viscosity.strain_dep_plasticity){
-	    tau *= strain_plasticity_function_factor(estrain, E->viscosity.plastic_strain_func);
-	  }
-	  if((visited > 1) && (tau < 1e15)){
-	    tau2 = tau * tau;
-	    eta_old = EEta[ (i-1)*vpts + jj ] ;
-	    eta_old2 = eta_old * eta_old;
-	    eta_new = (tau2 * eta_old)/(tau2 + 2.0 * eta_old2 * eedot[i]);
-	    EEta[ (i-1)*vpts + jj ] = ettnew;
-	    //if(E->parallel.me==0)fprintf(stderr,"tau: %11.4e eII: %11.4e eta_old: %11.4e eta_new: %11.4e\n",tau, eedot[i],eta_old,eta_new);
-	  }
-	  
 	}
       }
     }
@@ -1631,117 +1731,145 @@ static void visc_from_B(struct All_variables *E, float *Eta, float *EEta,
 	 loop through all elements 
       */
       l = E->mat[i] - 1;	/* material of element */
-      for(kk=1;kk <= ends;kk++){/* loop through integration points*/
-	node = E->ien[i].node[kk];
-        
-	/* depth in meters */
-	if(E->control.Rsphere)
-	  zz[kk] = (1.0 - E->SX[3][node]); 
-	else
-	  zz[kk] = (1.0 -  E->X[3][node]); 
-	if(E->viscosity.plasticity_dimensional)
-	  zz[kk] *= ndz_to_m;	/* scale to meters */
-	if(E->viscosity.pdepv_for_flavor){ 
-          tfn[kk]= E->CF[0][node];}
-	else if(E->viscosity.pdepv_for_zero_comp || E->viscosity.pdepv_for_unity_comp)
-	  tfn[kk]= E->C[node];
-	if(E->viscosity.strain_dep_plasticity)
-	  strain[kk] = E->strain[node];
-  
-      }
-      for(jj=1;jj <= vpts;jj++) { 
-	/* loop over nodes in element */
-	zzz = wmax = estrain = 0.0;
-	for(kk=1;kk <= ends;kk++)   { /* add the nodal contribution */
-	  /* 
-	     depth  [m] 
-	  */
-	  weight = E->N.vpt[GNVINDEX(kk,jj)];
-	  zzz += zz[kk] * weight;
-	  if(E->viscosity.pdepv_for_flavor || E->viscosity.pdepv_for_zero_comp || E->viscosity.pdepv_for_unity_comp){
-	    if(weight > wmax){
-	      wmax = weight;
-	      tracer_value = tfn[kk]; /* use the most important nodal flavor or composition (see above!) */
-	    }
-	  }
-	  if(E->viscosity.strain_dep_plasticity)
-	    estrain += strain[kk] * weight;
+      if((!E->viscosity.bdeplim_layer) || (l < E->viscosity.bdeplim_layer)){
+	tempa = E->viscosity.N0[l];
+	for(kk=1;kk <= ends;kk++){/* loop through integration points*/
+	  node = E->ien[i].node[kk];
+	  
+	  /* depth in meters */
+	  if(E->control.Rsphere)
+	    zz[kk] = (1.0 - E->SX[3][node]); 
+	  else
+	    zz[kk] = (1.0 -  E->X[3][node]); 
+	  if(E->viscosity.plasticity_dimensional)
+	    zz[kk] *= ndz_to_m;	/* scale to meters */
+	  if(E->viscosity.pdepv_for_flavor){ 
+	    tfn[kk]= E->CF[0][node];}
+	  else if(E->viscosity.pdepv_for_zero_comp || E->viscosity.pdepv_for_unity_comp)
+	    tfn[kk]= E->C[node];
+	  if(E->viscosity.strain_dep_plasticity > 0){
+	    if(E->tracers_track_fse)
+	      strain[kk] = E->strain2[node];
+	    else
+	      strain[kk] = E->strain[node];
+	  }	
 	}
-        //if(E->parallel.me==0)fprintf(stderr,"WHUDDUP: pdepv_for_flavor %i, pdepv_for_zero_comp %i, pdepv_for_unity_comp %i, c = %i \n", E->viscosity.pdepv_for_flavor,E->viscosity.pdepv_for_zero_comp,E->viscosity.pdepv_for_unity_comp,tracer_value);
-//	fprintf(stderr,"WHUDDUP: pdepv_for_flavor %i, pdepv_for_zero_comp %i, pdepv_for_unity_comp %i, c = %i \n", E->viscosity.pdepv_for_flavor,E->viscosity.pdepv_for_zero_comp,E->viscosity.pdepv_for_unity_comp,tracer_value);
-        if(((E->viscosity.pdepv_for_flavor==0) && (E->viscosity.pdepv_for_zero_comp==0) && (E->viscosity.pdepv_for_unity_comp==0))||
-           (E->viscosity.pdepv_for_flavor && (tracer_value == E->viscosity.pdepv_for_flavor))||
-           (E->viscosity.pdepv_for_zero_comp && (tracer_value < 0.5))||(E->viscosity.pdepv_for_unity_comp && (tracer_value > 0.5))){
-          npc++;
-           
-  //        fprintf(stderr,"WHUDDUP:in \n");
-	  if(E->viscosity.plasticity_dimensional){
-	    /* byerlee type */
+	eetty[i]=0.0;
+	esigY[i]=0.0;
+	for(jj=1;jj <= vpts;jj++) { 
+	  /* loop over nodes in element */
+	  zzz = wmax = estrain = 0.0;
+	  for(kk=1;kk <= ends;kk++)   { /* add the nodal contribution */
+	    /* 
+	       depth  [m] 
+	    */
+	    weight = E->N.vpt[GNVINDEX(kk,jj)];
+	    zzz += zz[kk] * weight;
+	    if(E->viscosity.pdepv_for_flavor || E->viscosity.pdepv_for_zero_comp || E->viscosity.pdepv_for_unity_comp){
+	      if(weight > wmax){
+		wmax = weight;
+		tracer_value = tfn[kk]; /* use the most important nodal flavor or composition (see above!) */
+	      }
+	    }
+	    if(E->viscosity.strain_dep_plasticity > 0)
+	      estrain += strain[kk] * weight;
+	  }
+	  //if(E->parallel.me==0)fprintf(stderr,"WHUDDUP: pdepv_for_flavor %i, pdepv_for_zero_comp %i, pdepv_for_unity_comp %i, c = %i \n", E->viscosity.pdepv_for_flavor,E->viscosity.pdepv_for_zero_comp,E->viscosity.pdepv_for_unity_comp,tracer_value);
+	  //	fprintf(stderr,"WHUDDUP: pdepv_for_flavor %i, pdepv_for_zero_comp %i, pdepv_for_unity_comp %i, c = %i \n", E->viscosity.pdepv_for_flavor,E->viscosity.pdepv_for_zero_comp,E->viscosity.pdepv_for_unity_comp,tracer_value);
+	  if(((E->viscosity.pdepv_for_flavor==0) && (E->viscosity.pdepv_for_zero_comp==0) && (E->viscosity.pdepv_for_unity_comp==0))||
+	     (E->viscosity.pdepv_for_flavor && (tracer_value == E->viscosity.pdepv_for_flavor))||
+	     (E->viscosity.pdepv_for_zero_comp && (tracer_value < 0.5))||(E->viscosity.pdepv_for_unity_comp && (tracer_value > 0.5))){
+	    npc++;
 	    
-	    /* 
-	       yield stress in [Pa] 
-	    */
-	    tau=(E->viscosity.abyerlee[l] * zzz + E->viscosity.bbyerlee[l]) * E->viscosity.lbyerlee[l];
-	    /* 
-	       scaled stress 
-	    */
-	    tau /= E->monitor.tau_scale;
-	  }else{
-	    tau = E->viscosity.abyerlee[l] * zzz + E->viscosity.bbyerlee[l];
-	    tau = min(tau,  E->viscosity.lbyerlee[l]);
-	  }
-
-	  if(E->viscosity.strain_dep_plasticity){
-	    tau *= strain_plasticity_function_factor(estrain,E->viscosity.plastic_strain_func);
-	  }
-	  /* 
-	     
-	  `byerlee viscosity' : tau = 2 eps eta, this is non-dim
-	  plus some offset as in Stein et al. 
-	  
-	  */
-	  ettby = tau/(2.0 * (eedot[i]+1e-7)) + E->viscosity.plasticity_viscosity_offset;
-	  /* 
-	     
-	  decide on the plasticity transition
-	  
-	  
-	  */
-	  if(E->viscosity.plasticity_trans){
-	    /* 
-	       eta = 1./(1./eta(k)+1./ettby)  
-	    */
+	    //        fprintf(stderr,"WHUDDUP:in \n");
+	    if(E->viscosity.plasticity_dimensional){
+	      /* byerlee type */
+	      
+	      /* 
+		 yield stress in [Pa] 
+	      */
+	      tau=(E->viscosity.abyerlee[l] * zzz + E->viscosity.bbyerlee[l]) * E->viscosity.lbyerlee[l];
+	      /* 
+		 scaled stress 
+	      */
+	      tau /= E->monitor.tau_scale;
+	    }else{
+	      tau = E->viscosity.abyerlee[l] + zzz * E->viscosity.bbyerlee[l];
+	      tau = min(tau,  E->viscosity.lbyerlee[l]); // t_y = min(a + b*z,l)
+	    }
 	    
-	    ettnew = 1.0/(1.0/EEta[ (i-1)*vpts + jj ] + 1.0/ettby);
-	  }else{
+	    if(E->viscosity.strain_dep_plasticity > 0){
+	      tau *= strain_plasticity_function_factor(estrain,E->D_max,E->gamma_cr);
+	    }
+	    esigY[i] += tau;
 	    /* 
-	       min(\eta_p, \eta_visc )
+	       
+	       `byerlee viscosity' : tau = 2 eps eta, this is non-dim
+	       plus some offset as in Stein et al. 
+	       
 	    */
-	    ettnew = min(EEta[ (i-1)*vpts + jj ],ettby);
-	  }
-	
+	    ettby = tau/(2.0 * (eedot[i]+1e-7)) + E->viscosity.plasticity_viscosity_offset;
+	    
+	    if(EEta[ (i-1)*vpts + jj ] > E->viscosity.max_value){
+	      eetty[i] += E->viscosity.max_value/ettby;   
+	    }else if(EEta[ (i-1)*vpts + jj ] < E->viscosity.min_value){
+	      eetty[i] += E->viscosity.min_value/ettby; 
+	    }else{
+	      eetty[i] += EEta[ (i-1)*vpts + jj ]/ettby; //tempa
+	    }
+	    /* 
+	       
+	       decide on the plasticity transition
+	       
+	       
+	    */
+	    if(E->viscosity.plasticity_trans){
+	      /* 
+		 eta = 1./(1./eta(k)+1./ettby)  
+	      */
+	      
+	      ettnew = 1.0/(1.0/EEta[ (i-1)*vpts + jj ] + 1.0/ettby);
+	    }else{
+	      /* 
+		 min(\eta_p, \eta_visc )
+	      */
+	      ettnew = min(EEta[ (i-1)*vpts + jj ],ettby);
+	    }
+	    
+	    if(E->viscosity.strain_dep_plasticity < 0){
+	      // Apply damage to effective viscosity
+	      ettnew *= strain_plasticity_function_factor(estrain,E->D_max,E->gamma_cr);
+	    }
+	    
 #ifdef DEBUG
-	  /* output format 
-	     
-	  z[km] tau[MPa] eps[s^-1] eta_b[Pas] eta_T[Pas] eta_c[Pas]
-	
-	  */
-	  if(visited)
-	    fprintf(stderr,"%10.2f %17.4e %17.4e %17.4e %17.4e %17.4e\n", 
-		    zzz/1e3,tau*E->monitor.tau_scale/1e6, 
-		    eedot[i]/E->monitor.time_scale, 
-		    ettby*E->data.ref_viscosity, 
-		    EEta[ (i-1)*vpts + jj ]*E->data.ref_viscosity, 
-		    ettnew*E->data.ref_viscosity); 
+	    /* output format 
+	       
+	       z[km] tau[MPa] eps[s^-1] eta_b[Pas] eta_T[Pas] eta_c[Pas]
+	       
+	    */
+	    if(visited)
+	      fprintf(stderr,"%10.2f %17.4e %17.4e %17.4e %17.4e %17.4e\n", 
+		      zzz/1e3,tau*E->monitor.tau_scale/1e6, 
+		      eedot[i]/E->monitor.time_scale, 
+		      ettby*E->data.ref_viscosity, 
+		      EEta[ (i-1)*vpts + jj ]*E->data.ref_viscosity, 
+		      ettnew*E->data.ref_viscosity); 
 #endif
-	  //      if(visited)
-	  //	fprintf(stderr,"%11.4e %11.4e %11.4e %11.4e\n",ettnew,EEta[ (i-1)*vpts + jj ] ,ettby,eedot[i]);
-	  EEta[ (i-1)*vpts + jj ] = ettnew;
-	} /* plasticity applies, for this flavor branch */
-      }	/* end integration point loop */
+	    //      if(visited)
+	    //	fprintf(stderr,"%11.4e %11.4e %11.4e %11.4e\n",ettnew,EEta[ (i-1)*vpts + jj ] ,ettby,eedot[i]);
+	    EEta[ (i-1)*vpts + jj ] = ettnew;
+	  } /* plasticity applies, for this flavor branch */
+	}	/* end integration point loop */
+	eetty[i] /= vpts; 
+	esigY[i] /= vpts; 
+      }
     } /* end regular plasticity */
   }
   
+  /* project yield viscosity to nodes */
+  e2_to_nodes(E,eetty,E->VIY,E->mesh.levmax);
+  e2_to_nodes(E,esigY,E->SIGY,E->mesh.levmax);
+
   if(E->viscosity.pdepv_for_flavor){
     MPI_Allreduce(&epoints,&tepoints,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
     MPI_Allreduce(&npc,&tnpc,1,MPI_INT,MPI_SUM,MPI_COMM_WORLD);
@@ -1754,26 +1882,23 @@ static void visc_from_B(struct All_variables *E, float *Eta, float *EEta,
 #endif
   visited = 1;
   free ((void *)eedot);
+  free ((void *)eetty);
+  free ((void *)esigY);
   return;  
 }
 
-float strain_plasticity_function_factor(float strain, float *plastic_strain_func)
+float strain_plasticity_function_factor(float strain, float max_D, float strain_lim)
 {
-  float fac;
-  static int visited = 0;
-  static float a,b,strain_limit,ab;
-  if(!visited){
-    a = plastic_strain_func[0];
-    b = plastic_strain_func[1];
-    strain_limit = plastic_strain_func[2];
-    ab = b - a;
-    visited = 1;
-  }
-  if(strain < strain_limit){
-    fac = a + strain/strain_limit * ab;
-  }else{
-    fac = b;
-  }
+  float fac,use_strain;
+  use_strain = (strain>0)?(strain):(0.0); /* make sure the damage to
+					     use is >= 0 */
+
+  fac = 1.0 - use_strain*(max_D/strain_lim); 
+
+  //if(fac < 0.1) fac = 0.1;
+  if(fac < 0)
+    fac = 0;
+
   return fac;
 }
 /* 
@@ -1953,22 +2078,31 @@ static void visc_from_C(struct All_variables *E, float *Eta, float *EEta, int pr
 void evolve_tracer_strain(struct All_variables *E)
 
 {
-  float *eedot,min_strain,max_strain,*evgm;
+  float *eedot,*etemp,min_strain,max_strain,eltemp,elzz,*ezz,*evgm;
+  double trace;
+  float H;
   CITCOM_XMC_PREC avgm[9];
-  int i,imark,inel,l;
+  int i,imark,inel,l,j,strain_col;
   const int nel = E->lmesh.nel;
   static int been_here = 0,tscol;
+
   if(!been_here){
     tscol = (E->tracers_track_fse)?(10):(1);
     been_here = 1;
   }
 
   eedot = (float *) safe_malloc((2+nel)*sizeof(float));
+  etemp = (float *) safe_malloc((2+nel)*sizeof(float));
+  ezz = (float *) safe_malloc((2+nel)*sizeof(float)); // Change into marker coordinate E->XMC
+
   if(E->tracers_track_fse)
     evgm = (float *) safe_malloc((2+nel)*9*sizeof(float));
   
   /* calculate the second invariant */
   strain_rate_2_inv(E,eedot,1,E->tracers_track_fse,evgm);
+
+  /* get mean temperature and depth/radius of the element */
+  get_element_temperature(E,etemp,ezz);
 
   max_strain = -1e20;
   min_strain = 1e20;
@@ -1979,34 +2113,108 @@ void evolve_tracer_strain(struct All_variables *E)
       max_strain = eedot[i];
   }
   if(E->parallel.me == 0)
-    fprintf(stderr,"evolving strain with dt %g, min/max strain-rate: %g/%g ",
+    fprintf(stderr,"evolving strain with dt %g, min/max strain-rate: %g/%g\n",
 	    E->advection.timestep,min_strain,max_strain);
+
+
   max_strain = -1e20;
   min_strain = 1e20;
-  for(imark = 1; imark <= E->advection.markers; imark++){ /* loop through tracers */
-    /* increment scalar strain */
-    inel = E->CElement[imark];
-    
-    E->tracer_strain[imark*tscol] += eedot[inel] * E->advection.timestep;
-    
-    if(E->tracers_track_fse){
-      /* update FSE matric */
-      /* AVGM = EVGM * TFSE, the time derivative of the FSE */
-      matmul_9_xmc((evgm+inel*9),(E->tracer_strain+imark*tscol+1),avgm);
-      /* Euler increase in FSE,  */
-      for(l=0;l<9;l++)
-	E->tracer_strain[imark*tscol+1+l] += avgm[l] * E->advection.timestep;
-    }
-    if(E->tracer_strain[imark*tscol] > max_strain)
-      max_strain = E->tracer_strain[imark*tscol];
-    if(E->tracer_strain[imark*tscol] < min_strain)
-      min_strain = E->tracer_strain[imark*tscol];
-  }
-  if(E->parallel.me == 0)
-    fprintf(stderr,"min/max strain: %g/%g\n",min_strain,max_strain);
 
+  for(imark = 1; imark <= E->advection.markers; imark++){
+
+    
+    /* increment scalar strain */
+    
+
+    inel = E->CElement[imark];	/* element number */
+    eltemp = etemp[inel];	/* element temperature */
+    l = E->mat[inel];		/* elementa material */
+    strain_col = imark*tscol;
+    //fprintf(stderr,"%8i %6i %11g %11g\n",imark,inel,ezz[inel],E->data.z_mwea);
+    if((eltemp <= E->data.T_mwea) && (ezz[inel] >= E->data.z_mwea)){
+      if(E->s_heal){
+         H = 0.0;
+         // H = E->B_heal*exp(-E->viscosity.E[1]/2 * ( 1.0/(eltemp+1.0) - 0.5) );
+	 H = E->B_heal*exp(-E->B_Tactivation/2 * ( 1.0/(eltemp+1.0) - 0.5) );
+	 // gamma(t+dt) = eps * dt + gamma(t) * ( 1 - H*dt )
+         E->tracer_strain[strain_col] = eedot[inel] * E->advection.timestep + 
+		   E->tracer_strain[strain_col] * (1.0 - H * E->advection.timestep);
+
+
+	 if(E->s_limit){
+		/* Changes made by Lukas Fuchs. 
+ 		Apply an upper strain limit for strain dependent weakening. This 
+		enables instant hardening as soon as the strain rate decreases again. 
+		Before, the strain would be able to increase above the critical strain, 
+		which results in longer healing times. */
+		E->tracer_strain[strain_col] = min(E->tracer_strain[strain_col],E->gamma_cr);
+ 	 }
+
+	 if(E->tracer_strain[strain_col] < 0)E->tracer_strain[strain_col] = 0.0;
+
+      }else{
+         /* increment strain */
+         E->tracer_strain[strain_col] += eedot[inel] * E->advection.timestep;
+      }
+
+      if(E->tracers_track_fse){
+        // update FSE matric 
+	// remove trace from vgm
+	trace = (evgm[inel*9]+evgm[inel*9+4]+evgm[inel*9+8])/3;
+	for(l=0;l<3;l++)
+	   evgm[inel*9+(l*4)] -= trace;
+
+	matmul_9_xmc((evgm+inel*9),(E->tracer_strain+strain_col+1),avgm);
+
+        // Euler increase in FSE,
+        for(l=0;l<9;l++)
+   	   E->tracer_strain[strain_col+1+l] += avgm[l] * E->advection.timestep;
+      } 
+    }
+  }
+/*  if(E->parallel.me == 0)
+    fprintf(stderr,"min/max strain: %g/%g\n",min_strain,max_strain);*/
+
+  free(etemp);
   free(eedot);
+  free(ezz);
   if(E->tracers_track_fse)
     free(evgm);
 }
 
+/* get element temperature and depth/radius */
+void get_element_temperature(struct All_variables *E, float *ETEMP, float *EZZ)
+{
+  int e,l,kk;
+  int inode;
+  const int ends = enodes[E->mesh.nsd];
+  const int nel = E->lmesh.nel;
+  if(E->control.Rsphere){	/* spherical */
+    for(e = 1; e <= nel; e++)
+      {
+	ETEMP[e] = 0.0;
+	EZZ[e] = 0.0;
+	for(kk = 1; kk <= ends; kk++)
+	  {
+	    inode = E->ien[e].node[kk];
+	    ETEMP[e] += E->T[inode];
+	    EZZ[e]   += E->SX[3][inode]; /* radius */
+	  }
+	ETEMP[e] /= (float)ends;
+	EZZ[e] /= (float)ends;
+      }
+  }else{
+    for(e = 1; e <= nel; e++)
+      {
+	ETEMP[e] = 0.0;EZZ[e] = 0.0;
+	for(kk = 1; kk <= ends; kk++)
+	  {
+	    inode = E->ien[e].node[kk];
+	    ETEMP[e] += E->T[inode];
+	    EZZ[e]   += E->X[3][inode];
+	  }
+	ETEMP[e] /= (float)ends;
+	EZZ[e] /= (float)ends;
+      }
+  }
+}
